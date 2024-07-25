@@ -258,18 +258,27 @@ impl Process {
         ));
         new_process.set_file_path(path.clone());
         let new_task = new_task(
-            || {},
+            #[cfg(not(feature = "async"))] || {},
+            #[cfg(feature = "async")] || async { 0 },
             path,
             axconfig::TASK_STACK_SIZE,
             new_process.pid(),
             page_table_token,
         );
+        #[cfg(feature = "async")]
+        {
+            let kstack_top = new_task.get_kernel_stack_top().unwrap();
+            let taskctx = (kstack_top - core::mem::size_of::<TrapFrame>()) as *mut axtask::TaskContext;    
+            axlog::trace!("taskctx: {:X}", taskctx as usize);
+            new_task.set_ctx_ref(taskctx);
+        }
         TID2TASK
             .lock()
             .insert(new_task.id().as_u64(), Arc::clone(&new_task));
         new_task.set_leader(true);
-        let new_trap_frame =
+        let mut new_trap_frame =
             TrapFrame::app_init_context(entry.as_usize(), user_stack_bottom.as_usize());
+        new_trap_frame.ctx_type = 1;
         // // 需要将完整内容写入到内核栈上，first_into_user并不会复制到内核栈上
         write_trapframe_to_kstack(new_task.get_kernel_stack_top().unwrap(), &new_trap_frame);
         new_process.tasks.lock().push(Arc::clone(&new_task));
@@ -494,7 +503,8 @@ impl Process {
             self.pid
         };
         let new_task = new_task(
-            || {},
+            #[cfg(not(feature = "async"))] || {},
+            #[cfg(feature = "async")] || async { 0 },
             String::from(self.tasks.lock()[0].name().split('/').last().unwrap()),
             axconfig::TASK_STACK_SIZE,
             process_id,
