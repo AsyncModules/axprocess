@@ -510,7 +510,13 @@ impl Process {
             process_id,
             new_memory_set.lock().lock().page_table_token(),
         );
-
+        #[cfg(feature = "async")]
+        {
+            let kstack_top = new_task.get_kernel_stack_top().unwrap();
+            let taskctx = (kstack_top - core::mem::size_of::<TrapFrame>()) as *mut axtask::TaskContext;    
+            axlog::trace!("taskctx: {:X}", taskctx as usize);
+            new_task.set_ctx_ref(taskctx);
+        }
         // When clone a new task, the new task should have the same fs_base as the original task.
         //
         // It should be saved in trap frame, but to compatible with Unikernel, we save it in TaskContext.
