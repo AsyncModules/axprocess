@@ -102,7 +102,12 @@ pub fn load_trap_for_signal() -> bool {
         unsafe {
             // let now_trap_frame: *mut TrapFrame = current_task.get_first_trap_frame();
             let mut now_trap_frame =
-                read_trapframe_from_kstack(current_task.get_kernel_stack_top().unwrap());
+                read_trapframe_from_kstack(
+                    #[cfg(not(feature = "async"))]
+                    current_task.get_kernel_stack_top().unwrap(),
+                    #[cfg(feature = "async")]
+                    axtask::current_processor().get_curr_stack_top().as_usize(),
+                );
             // 考虑当时调用信号处理函数时，sp对应的地址上的内容即是SignalUserContext
             // 此时认为一定通过sig_return调用这个函数
             // 所以此时sp的位置应该是SignalUserContext的位置
@@ -113,7 +118,10 @@ pub fn load_trap_for_signal() -> bool {
                 now_trap_frame.set_pc(pc);
             }
             write_trapframe_to_kstack(
+                #[cfg(not(feature = "async"))]
                 current_task.get_kernel_stack_top().unwrap(),
+                #[cfg(feature = "async")]
+                axtask::current_processor().get_curr_stack_top().as_usize(),
                 &now_trap_frame,
             );
         }
@@ -193,7 +201,10 @@ pub fn handle_signals() {
     // 说明之前的信号处理函数已经返回，即没有信号嵌套。
     // 此时可以将当前的trap frame保存起来
     signal_module.last_trap_frame_for_signal = Some(read_trapframe_from_kstack(
+        #[cfg(not(feature = "async"))]
         current_task.get_kernel_stack_top().unwrap(),
+        #[cfg(feature = "async")]
+        axtask::current_processor().get_curr_stack_top().as_usize(),
     ));
     // current_task.set_siginfo(false);
     signal_module.sig_info = false;
@@ -236,7 +247,12 @@ pub fn handle_signals() {
     // 2. 返回值ra地址的设定，与是否设置了SA_RESTORER有关
 
     // 读取当前的trap上下文
-    let mut trap_frame = read_trapframe_from_kstack(current_task.get_kernel_stack_top().unwrap());
+    let mut trap_frame = read_trapframe_from_kstack(
+        #[cfg(not(feature = "async"))]
+        current_task.get_kernel_stack_top().unwrap(),
+        #[cfg(feature = "async")]
+        axtask::current_processor().get_curr_stack_top().as_usize(),
+    );
 
     // // 新的trap上下文的sp指针位置，由于SIGINFO会存放内容，所以需要开个保护区域
     let mut sp = if action.sa_flags.contains(SigActionFlags::SA_ONSTACK)
@@ -311,7 +327,13 @@ pub fn handle_signals() {
 
     trap_frame.set_user_sp(sp);
     // 将修改后的trap上下文写回内核栈
-    write_trapframe_to_kstack(current_task.get_kernel_stack_top().unwrap(), &trap_frame);
+    write_trapframe_to_kstack(
+        #[cfg(not(feature = "async"))]
+        current_task.get_kernel_stack_top().unwrap(),
+        #[cfg(feature = "async")]
+        axtask::current_processor().get_curr_stack_top().as_usize(),
+        &trap_frame
+    );
     drop(signal_handler);
     drop(signal_modules);
 }
@@ -323,7 +345,12 @@ pub fn signal_return() -> isize {
     if load_trap_for_signal() {
         // 说明确实存在着信号处理函数的trap上下文
         // 此时内核栈上存储的是调用信号处理前的trap上下文
-        read_trapframe_from_kstack(current_task().get_kernel_stack_top().unwrap()).get_ret_code()
+        read_trapframe_from_kstack(
+            #[cfg(not(feature = "async"))]
+            current_task().get_kernel_stack_top().unwrap(),
+            #[cfg(feature = "async")]
+            axtask::current_processor().get_curr_stack_top().as_usize(),
+        ).get_ret_code()
             as isize
     } else {
         // 没有进行信号处理，但是调用了sig_return
