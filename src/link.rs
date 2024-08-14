@@ -146,7 +146,7 @@ pub unsafe fn raw_ptr_to_ref_str(start: *const u8) -> &'static str {
 }
 
 /// 用户看到的文件到实际文件的映射
-pub static LINK_PATH_MAP: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+static LINK_PATH_MAP: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 /// 实际文件(而不是用户文件)到链接数的映射
 pub static LINK_COUNT_MAP: Mutex<BTreeMap<String, usize>> = Mutex::new(BTreeMap::new());
 
@@ -364,7 +364,7 @@ pub fn deal_with_path(
         // 如果path不是绝对路径, 则加上当前工作目录
         let cwd = process.get_cwd();
         assert!(cwd.ends_with('/'));
-        path = format!("{}/{}", cwd, path);
+        path = format!("{}{}", cwd, path);
     }
     if force_dir && !path.ends_with('/') {
         path = format!("{}/", path);

@@ -3,11 +3,14 @@ use axfs::api::port::{
     ConsoleWinSize, FileExt, FileIO, FileIOType, OpenFlags, FIOCLEX, TCGETS, TIOCGPGRP, TIOCGWINSZ,
     TIOCSPGRP,
 };
-use axhal::console::{getchar, write_bytes};
+use axhal::console::{getchar, putchar, write_bytes};
 use axio::{Read, Seek, SeekFrom, Write};
 use axlog::warn;
 use axsync::Mutex;
 use axtask::yield_now;
+
+extern crate alloc;
+use alloc::string::String;
 /// stdin file for getting chars from console
 pub struct Stdin {
     pub flags: Mutex<OpenFlags>,
@@ -24,24 +27,70 @@ pub struct Stderr {
     pub flags: Mutex<OpenFlags>,
 }
 
+pub const LF: u8 = 0x0au8;
+pub const CR: u8 = 0x0du8;
+pub const DL: u8 = 0x7fu8;
+pub const BS: u8 = 0x08u8;
+
+pub const SPACE: u8 = 0x20u8;
+
+pub const BACKSPACE: [u8; 3] = [BS, SPACE, BS];
+
 fn stdin_read(buf: &mut [u8]) -> AxResult<usize> {
     let ch: u8;
-    loop {
-        match getchar() {
-            Some(c) => {
-                ch = c;
-                break;
+    // busybox
+    if buf.len() == 1 {
+        loop {
+            match getchar() {
+                Some(c) => {
+                    ch = c;
+                    break;
+                }
+                None => {
+                    yield_now();
+                    continue;
+                }
             }
-            None => {
+        }
+        unsafe {
+            buf.as_mut_ptr().write_volatile(ch);
+        }
+        Ok(1)
+    } 
+    else {
+        // user appilcation
+        let mut line = String::new();
+        loop {
+            let c = getchar();
+            if let Some(c) = c {
+                match c {
+                    LF | CR => {
+                        // convert '\r' to '\n'
+                        line.push('\n');
+                        putchar(b'\n');
+                        break;
+                    }
+                    BS | DL => {
+                        if !line.is_empty() {
+                            write_bytes(&BACKSPACE);
+                            line.pop();
+                        }
+                    }
+                    _ => {
+                        // echo 
+                        putchar(c);
+                        line.push(c as char);
+                    }
+                }
+            } else {
                 yield_now();
                 continue;
             }
         }
+        let len = line.len();
+        buf[..len].copy_from_slice(line.as_bytes());
+        Ok(len)
     }
-    unsafe {
-        buf.as_mut_ptr().write_volatile(ch);
-    }
-    Ok(1)
 }
 
 fn stdout_write(buf: &[u8]) -> AxResult<usize> {

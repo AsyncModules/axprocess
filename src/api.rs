@@ -14,19 +14,20 @@ use axhal::mem::VirtAddr;
 use axhal::paging::MappingFlags;
 use axhal::time::{current_time_nanos, NANOS_PER_MICROS, NANOS_PER_SEC};
 use axhal::KERNEL_PROCESS_ID;
-use axlog::{debug, info};
+use axlog::{info, warn};
 use axmem::MemorySet;
 
 use axsignal::signal_no::SignalNo;
 use axsync::Mutex;
 use axtask::{current, current_processor, yield_now, AxTaskRef, CurrentTask, TaskId, TaskState};
+use core::sync::atomic::AtomicI32;
 use elf_parser::{
     get_app_stack_region, get_auxv_vector, get_elf_entry, get_elf_segments, get_relocate_pairs,
 };
 use xmas_elf::program::SegmentData;
 
 use crate::flags::WaitStatus;
-use crate::futex::clear_wait;
+use crate::futex::futex_wake;
 use crate::link::real_path;
 use crate::process::{Process, PID2PC, TID2TASK};
 
@@ -36,10 +37,13 @@ use crate::signal::{send_signal_to_process, send_signal_to_thread};
 pub fn init_kernel_process() {
     let kernel_process = Arc::new(Process::new(
         TaskId::new().as_u64(),
+        axconfig::TASK_STACK_SIZE as u64,
         0,
         Mutex::new(Arc::new(Mutex::new(MemorySet::new_empty()))),
         0,
-        vec![],
+        Arc::new(Mutex::new(String::from("/").into())),
+        Arc::new(AtomicI32::new(0o022)),
+        Arc::new(Mutex::new(vec![])),
     ));
 
     axtask::init_scheduler();
@@ -67,14 +71,6 @@ pub fn exit_current_task(exit_code: i32) -> ! {
     let curr_id = current_task.id().as_u64();
 
     info!("exit task id {} with code _{}_", curr_id, exit_code);
-    clear_wait(
-        if current_task.is_leader() {
-            process.pid()
-        } else {
-            curr_id
-        },
-        current_task.is_leader(),
-    );
     // 检查这个任务是否有sig_child信号
     let exit_signal = process
         .signal_modules
@@ -92,7 +88,7 @@ pub fn exit_current_task(exit_code: i32) -> ! {
             } else {
                 SignalNo::SIGCHLD
             };
-            send_signal_to_process(parent as isize, signal as isize).unwrap();
+            send_signal_to_process(parent as isize, signal as isize, None).unwrap();
         }
     }
     // clear_child_tid 的值不为 0，则将这个用户地址处的值写为0
@@ -105,6 +101,7 @@ pub fn exit_current_task(exit_code: i32) -> ! {
         {
             unsafe {
                 *(clear_child_tid as *mut i32) = 0;
+                let _ = futex_wake(clear_child_tid.into(), 0, 1);
             }
         }
     }
@@ -114,7 +111,8 @@ pub fn exit_current_task(exit_code: i32) -> ! {
             for task in process.tasks.lock().deref() {
                 if !task.is_leader() && task.state() != TaskState::Exited {
                     all_exited = false;
-                    break;
+                    send_signal_to_thread(task.id().as_u64() as isize, SignalNo::SIGKILL as isize)
+                        .unwrap();
                 }
             }
             if !all_exited {
@@ -181,10 +179,10 @@ pub fn load_app(
         ans
     } else {
         // exit(0)
+        info!("App not found: {}", name);
         return Err(AxError::NotFound);
     };
     let elf = xmas_elf::ElfFile::new(&elf_data).expect("Error parsing app ELF file.");
-    debug!("app elf data length: {}", elf_data.len());
     if let Some(interp) = elf
         .program_iter()
         .find(|ph| ph.get_type() == Ok(xmas_elf::program::Type::Interp))
@@ -203,7 +201,7 @@ pub fn load_app(
     }
     info!("load app args: {:?} name: {}", args, name);
     let elf_base_addr = Some(0x400_0000);
-    axlog::warn!("The elf base addr may be different in different arch!");
+    warn!("The elf base addr may be different in different arch!");
     // let (entry, segments, relocate_pairs) = parse_elf(&elf, elf_base_addr);
     let entry = get_elf_entry(&elf, elf_base_addr);
     let segments = get_elf_segments(&elf, elf_base_addr);
@@ -293,13 +291,7 @@ pub fn time_stat_output() -> (usize, usize, usize, usize) {
 
 /// To deal with the page fault
 pub fn handle_page_fault(addr: VirtAddr, flags: MappingFlags) {
-    axlog::debug!("'page fault' addr: {:?}, flags: {:?}", addr, flags);
     let current_process = current_process();
-    axlog::debug!(
-        "memory token : {:#x}",
-        current_process.memory_set.lock().lock().page_table_token()
-    );
-
     if current_process
         .memory_set
         .lock()

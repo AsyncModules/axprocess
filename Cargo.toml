@@ -32,6 +32,7 @@ axerrno = { git = "https://github.com/Starry-OS/axerrno.git" }
 axconfig = { git = "https://github.com/Starry-OS/axconfig.git" }
 axfs = { git = "https://github.com/Starry-OS/axfs.git", optional = true }
 axsignal = { git = "https://github.com/Starry-OS/axsignal.git" }
+axfutex = { git = "https://github.com/Starry-OS/axfutex.git" }
 riscv = "0.10"
 bitflags = "2.0"
 lazy_static = { version = "1.4", features = ["spin_no_std"] }

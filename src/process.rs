@@ -1,5 +1,6 @@
 //! 规定进程控制块内容
 extern crate alloc;
+use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -20,7 +21,7 @@ use axsync::Mutex;
 use axtask::{current, new_task, AxTaskRef, Processor, TaskId};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
-use crate::fd_manager::FdManager;
+use crate::fd_manager::{FdManager, FdTable};
 use crate::flags::CloneFlags;
 use crate::futex::FutexRobustList;
 
@@ -46,6 +47,9 @@ pub struct Process {
 
     /// 父进程号
     pub parent: AtomicU64,
+
+    /// 栈大小
+    pub stack_size: AtomicU64,
 
     /// 子进程
     pub children: Mutex<Vec<Arc<Process>>>,
@@ -91,6 +95,17 @@ impl Process {
     /// get the process id
     pub fn pid(&self) -> u64 {
         self.pid
+    }
+
+    /// TODO: 改变了新创建的任务栈大小，但未实现当前任务的栈扩展
+    /// set stack size
+    pub fn set_stack_limit(&self, limit: u64) {
+        self.stack_size.store(limit, Ordering::Release)
+    }
+
+    /// get stack size
+    pub fn get_stack_limit(&self) -> u64 {
+        self.stack_size.load(Ordering::Acquire)
     }
 
     /// get the parent process id
@@ -177,13 +192,17 @@ impl Process {
     /// 创建一个新的进程
     pub fn new(
         pid: u64,
+        stack_size: u64,
         parent: u64,
         memory_set: Mutex<Arc<Mutex<MemorySet>>>,
         heap_bottom: u64,
-        fd_table: Vec<Option<Arc<dyn FileIO>>>,
+        cwd: Arc<Mutex<String>>,
+        mask: Arc<AtomicI32>,
+        fd_table: FdTable,
     ) -> Self {
         Self {
             pid,
+            stack_size: AtomicU64::new(stack_size),
             parent: AtomicU64::new(parent),
             children: Mutex::new(Vec::new()),
             tasks: Mutex::new(Vec::new()),
@@ -192,7 +211,7 @@ impl Process {
             memory_set,
             heap_bottom: AtomicU64::new(heap_bottom),
             heap_top: AtomicU64::new(heap_bottom),
-            fd_manager: FdManager::new(fd_table, FD_LIMIT_ORIGIN),
+            fd_manager: FdManager::new(fd_table, cwd, mask, FD_LIMIT_ORIGIN),
 
             signal_modules: Mutex::new(BTreeMap::new()),
             robust_list: Mutex::new(BTreeMap::new()),
@@ -236,32 +255,37 @@ impl Process {
                 error!("Failed to load app {}", path);
                 return Err(AxError::NotFound);
             };
+
+        let new_fd_table: FdTable = Arc::new(Mutex::new(vec![
+            // 标准输入
+            Some(Arc::new(Stdin {
+                flags: Mutex::new(OpenFlags::empty()),
+            })),
+            // 标准输出
+            Some(Arc::new(Stdout {
+                flags: Mutex::new(OpenFlags::empty()),
+            })),
+            // 标准错误
+            Some(Arc::new(Stderr {
+                flags: Mutex::new(OpenFlags::empty()),
+            })),
+        ]));
         let new_process = Arc::new(Self::new(
             TaskId::new().as_u64(),
+            axconfig::TASK_STACK_SIZE as u64,
             KERNEL_PROCESS_ID,
             Mutex::new(Arc::new(Mutex::new(memory_set))),
             heap_bottom.as_usize() as u64,
-            vec![
-                // 标准输入
-                Some(Arc::new(Stdin {
-                    flags: Mutex::new(OpenFlags::empty()),
-                })),
-                // 标准输出
-                Some(Arc::new(Stdout {
-                    flags: Mutex::new(OpenFlags::empty()),
-                })),
-                // 标准错误
-                Some(Arc::new(Stderr {
-                    flags: Mutex::new(OpenFlags::empty()),
-                })),
-            ],
+            Arc::new(Mutex::new(String::from("/").into())),
+            Arc::new(AtomicI32::new(0o022)),
+            new_fd_table,
         ));
         new_process.set_file_path(path.clone());
         let new_task = new_task(
             #[cfg(not(feature = "async"))] || {},
             #[cfg(feature = "async")] || async { 0 },
             path,
-            axconfig::TASK_STACK_SIZE,
+            new_process.get_stack_limit() as usize,
             new_process.pid(),
             page_table_token,
         );
@@ -506,7 +530,7 @@ impl Process {
             #[cfg(not(feature = "async"))] || {},
             #[cfg(feature = "async")] || async { 0 },
             String::from(self.tasks.lock()[0].name().split('/').last().unwrap()),
-            axconfig::TASK_STACK_SIZE,
+            self.get_stack_limit() as usize,
             process_id,
             new_memory_set.lock().lock().page_table_token(),
         );
@@ -643,15 +667,31 @@ impl Process {
                 .insert(new_task.id().as_u64(), FutexRobustList::default());
             return_id = new_task.id().as_u64();
         } else {
+            let mut cwd_src = Arc::new(Mutex::new(String::from("/").into()));
+            let mut mask_src = Arc::new(AtomicI32::new(0o022));
+            if clone_flags.contains(CloneFlags::CLONE_FS) {
+                cwd_src = Arc::clone(&self.fd_manager.cwd);
+                mask_src = Arc::clone(&self.fd_manager.umask);
+            }
             // 若创建的是进程，那么需要新建进程
             // 由于地址空间是复制的，所以堆底的地址也一定相同
+            let fd_table = if clone_flags.contains(CloneFlags::CLONE_FILES) {
+                Arc::clone(&self.fd_manager.fd_table)
+            } else {
+                Arc::new(Mutex::new(self.fd_manager.fd_table.lock().clone()))
+            };
             let new_process = Arc::new(Process::new(
                 process_id,
+                self.get_stack_limit(),
                 parent_id,
                 new_memory_set,
                 self.get_heap_bottom(),
-                self.fd_manager.fd_table.lock().clone(),
+                cwd_src,
+                mask_src,
+                fd_table,
             ));
+            // 复制当前工作文件夹
+            new_process.set_cwd(self.get_cwd());
             // 记录该进程，防止被回收
             PID2PC.lock().insert(process_id, Arc::clone(&new_process));
             new_process.tasks.lock().push(Arc::clone(&new_task));
@@ -768,12 +808,12 @@ impl Process {
 
     /// 获取当前进程的工作目录
     pub fn get_cwd(&self) -> String {
-        self.fd_manager.cwd.lock().clone()
+        self.fd_manager.cwd.lock().clone().to_string()
     }
 
     /// Set the current working directory of the process
     pub fn set_cwd(&self, cwd: String) {
-        *self.fd_manager.cwd.lock() = cwd;
+        *self.fd_manager.cwd.lock() = cwd.into();
     }
 }
 
