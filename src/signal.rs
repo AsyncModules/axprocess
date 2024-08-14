@@ -132,7 +132,7 @@ pub fn load_trap_for_signal() -> bool {
 }
 
 /// 处理 Terminate 类型的信号
-fn terminate_process(signal: SignalNo) {
+fn terminate_process(signal: SignalNo, info: Option<SigInfo>) {
     let current_task = current_task();
     warn!("Terminate process: {}", current_task.get_process_id());
     if current_task.is_leader() {
@@ -140,7 +140,12 @@ fn terminate_process(signal: SignalNo) {
     } else {
         // 此时应当关闭当前进程
         // 选择向主线程发送信号内部来关闭
-        send_signal_to_process(current_task.get_process_id() as isize, signal as isize).unwrap();
+        send_signal_to_process(
+            current_task.get_process_id() as isize,
+            signal as isize,
+            info,
+        )
+        .unwrap();
         exit_current_task(-1);
     }
 }
@@ -221,7 +226,7 @@ pub fn handle_signals() {
                 load_trap_for_signal();
             }
             SignalDefault::Terminate => {
-                terminate_process(signal);
+                terminate_process(signal, None);
             }
             SignalDefault::Stop => {
                 unimplemented!();
@@ -230,7 +235,7 @@ pub fn handle_signals() {
                 unimplemented!();
             }
             SignalDefault::Core => {
-                terminate_process(signal);
+                terminate_process(signal, None);
             }
         }
         return;
@@ -299,9 +304,14 @@ pub fn handle_signals() {
 
         // 注意16字节对齐
         sp = (sp - core::mem::size_of::<SigInfo>()) & !0xf;
-        let info = SigInfo {
-            si_signo: sig_num as i32,
-            ..Default::default()
+        let info = if let Some(info) = signal_set.info.get(&(sig_num - 1)) {
+            info!("test SigInfo: {:?}", info.0.si_val_int);
+            info.0
+        } else {
+            SigInfo {
+                si_signo: sig_num as i32,
+                ..Default::default()
+            }
         };
         unsafe {
             *(sp as *mut SigInfo) = info;
@@ -362,7 +372,7 @@ pub fn signal_return() -> isize {
 /// 发送信号到指定的进程
 ///
 /// 默认发送到该进程下的主线程
-pub fn send_signal_to_process(pid: isize, signum: isize) -> AxResult<()> {
+pub fn send_signal_to_process(pid: isize, signum: isize, info: Option<SigInfo>) -> AxResult<()> {
     let mut pid2pc = PID2PC.lock();
     if !pid2pc.contains_key(&(pid as u64)) {
         return Err(axerrno::AxError::NotFound);
@@ -378,7 +388,9 @@ pub fn send_signal_to_process(pid: isize, signum: isize) -> AxResult<()> {
     if now_id.is_some() {
         let mut signal_modules = process.signal_modules.lock();
         let signal_module = signal_modules.get_mut(&now_id.unwrap()).unwrap();
-        signal_module.signal_set.try_add_signal(signum as usize);
+        signal_module
+            .signal_set
+            .try_add_signal(signum as usize, info);
         let tid2task = TID2TASK.lock();
         let main_task = Arc::clone(tid2task.get(&now_id.unwrap()).unwrap());
         // 如果这个时候对应的线程是处于休眠状态的，则唤醒之，进入信号处理阶段
@@ -411,7 +423,9 @@ pub fn send_signal_to_thread(tid: isize, signum: isize) -> AxResult<()> {
         return Err(axerrno::AxError::NotFound);
     }
     let signal_module = signal_modules.get_mut(&(tid as u64)).unwrap();
-    signal_module.signal_set.try_add_signal(signum as usize);
+    signal_module
+        .signal_set
+        .try_add_signal(signum as usize, None);
     // 如果这个时候对应的线程是处于休眠状态的，则唤醒之，进入信号处理阶段
     if task.is_blocked() {
         axtask::wakeup_task(task);
