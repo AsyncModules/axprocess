@@ -2,6 +2,7 @@
 extern crate alloc;
 use alloc::string::ToString;
 use alloc::sync::Arc;
+use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
 use alloc::{collections::BTreeMap, string::String};
@@ -221,7 +222,7 @@ impl Process {
     }
     /// 根据给定参数创建一个新的进程，作为应用程序初始进程
     pub fn init(args: Vec<String>, envs: &Vec<String>) -> AxResult<AxTaskRef> {
-        let path = args[0].clone();
+        let mut path = args[0].clone();
         let mut memory_set = MemorySet::new_memory_set();
 
         {
@@ -280,6 +281,12 @@ impl Process {
             Arc::new(AtomicI32::new(0o022)),
             new_fd_table,
         ));
+        if !path.starts_with('/') {
+            //如果path不是绝对路径, 则加上当前工作目录
+            let cwd = new_process.get_cwd();
+            assert!(cwd.ends_with('/'));
+            path = format!("{}{}", cwd, path);
+        }
         new_process.set_file_path(path.clone());
         let new_task = new_task(
             || {},
