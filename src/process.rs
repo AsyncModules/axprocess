@@ -296,9 +296,7 @@ impl Process {
         {
             let stack_size = new_process.get_stack_limit() as usize;
             new_task.init_user_kstack(stack_size);
-            new_task.set_ctx_type(axtask::ContextType::UTRAP);
-            let kstack_top = new_task.get_kernel_stack_top().unwrap();
-            new_task.set_ctx_trap_frame(kstack_top - core::mem::size_of::<TrapFrame>());
+            new_task.set_ctx_type(axtask::ContextType::THREAD);
         }
         let new_trap_frame =
             TrapFrame::app_init_context(entry.as_usize(), user_stack_bottom.as_usize());
@@ -454,13 +452,10 @@ impl Process {
         // user_stack_top = user_stack_top / PAGE_SIZE_4K * PAGE_SIZE_4K;
         let new_trap_frame =
             TrapFrame::app_init_context(entry.as_usize(), user_stack_bottom.as_usize());
-        #[cfg(not(feature = "async"))]
         write_trapframe_to_kstack(
             current_task.get_kernel_stack_top().unwrap(),
             &new_trap_frame,
         );
-        #[cfg(feature = "async")]
-        write_trapframe_to_kstack(axtask::current_processor().get_curr_stack_top().as_usize(),  &new_trap_frame);
 
         // release vfork for parent process
         {
@@ -720,11 +715,8 @@ impl Process {
         }
         // 复制原有的trap上下文
         // let mut trap_frame = unsafe { *(current_task.get_first_trap_frame()) };
-        #[cfg(not(feature = "async"))]
         let mut trap_frame =
             read_trapframe_from_kstack(current().get_kernel_stack_top().unwrap());
-        #[cfg(feature = "async")]
-        let mut trap_frame = read_trapframe_from_kstack(axtask::current_processor().get_curr_stack_top().as_usize());
         // drop(current_task);
         // 新开的进程/线程返回值为0
         trap_frame.set_ret_code(0);
@@ -752,9 +744,7 @@ impl Process {
         {
             let stack_size = self.get_stack_limit() as usize;
             new_task.init_user_kstack(stack_size);
-            new_task.set_ctx_type(axtask::ContextType::UTRAP);
-            let kstack_top = new_task.get_kernel_stack_top().unwrap();
-            new_task.set_ctx_trap_frame(kstack_top - core::mem::size_of::<TrapFrame>());
+            new_task.set_ctx_type(axtask::ContextType::THREAD);
         }
         write_trapframe_to_kstack(new_task.get_kernel_stack_top().unwrap(), &trap_frame);
         Processor::first_add_task(new_task);
