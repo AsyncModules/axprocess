@@ -12,6 +12,8 @@ authors = ["Youjie Zheng <zyj578335934@gmail.com>"]
 
 fs = ["axfs"]
 
+future = ["axtask/future"]
+
 monolithic = ["fs", "axfs/monolithic", "axhal/monolithic", "axtask/monolithic"]
 
 default = ["monolithic"]

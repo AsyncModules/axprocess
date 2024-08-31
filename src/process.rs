@@ -299,6 +299,12 @@ impl Process {
             .lock()
             .insert(new_task.id().as_u64(), Arc::clone(&new_task));
         new_task.set_leader(true);
+        #[cfg(feature = "future")]
+        {
+            let stack_size = new_process.get_stack_limit() as usize;
+            new_task.init_user_kstack(stack_size, core::mem::size_of::<TrapFrame>());
+            new_task.set_ctx_type(axtask::ContextType::THREAD);
+        }
         let new_trap_frame =
             TrapFrame::app_init_context(entry.as_usize(), user_stack_bottom.as_usize());
         // // 需要将完整内容写入到内核栈上，first_into_user并不会复制到内核栈上
@@ -741,6 +747,12 @@ impl Process {
             //     "New user stack: sepc:{:X}, stack:{:X}",
             //     trap_frame.sepc, trap_frame.regs.sp
             // );
+        }
+        #[cfg(feature = "future")]
+        {
+            let stack_size = self.get_stack_limit() as usize;
+            new_task.init_user_kstack(stack_size, core::mem::size_of::<TrapFrame>());
+            new_task.set_ctx_type(axtask::ContextType::THREAD);
         }
         write_trapframe_to_kstack(new_task.get_kernel_stack_top().unwrap(), &trap_frame);
         Processor::first_add_task(new_task);
