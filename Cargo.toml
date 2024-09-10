@@ -14,7 +14,7 @@ fs = ["axfs"]
 
 future = ["axtask/future"]
 
-monolithic = ["fs", "axfs/monolithic", "axhal/monolithic", "axtask/monolithic"]
+monolithic = ["fs", "axfs/monolithic", "axhal/monolithic", "axtask/monolithic", "future"]
 
 default = ["monolithic"]
 
